@@ -9,17 +9,17 @@ GAN  based, which is context-aware. This is a continuation of the project contex
 [![LaMa](https://img.shields.io/badge/Inpainting-LaMa-orange)](https://github.com/advimman/lama)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## 🚀 Overview
+##  Overview
 
 **VoidBox** is a security-first computer vision tool designed to detect sensitive documents (Passports, IDs, Credit Cards) and **permanently** remove them from images.
 
 Unlike Gaussian blurring or pixelation—which are reversible using modern De-blurring GANs—VoidBox uses **Generative Adversarial Networks (LaMa)** to hallucinate a synthetic background texture over the sensitive area. The PII is not just hidden; it is mathematically erased.
 
-## 📸 Demo
+##  Demo
 
 *(Insert your GIF here showing the detection -> mask -> inpaint process)*
 
-## 🧠 The Architecture (Cascade Pipeline)
+##  The Architecture (Cascade Pipeline)
 
 VoidBox operates as a two-stage cascade pipeline to ensure **100% coverage** of sensitive data.
 
@@ -37,14 +37,14 @@ VoidBox operates as a two-stage cascade pipeline to ensure **100% coverage** of 
 * **Model:** Large Mask Inpainting (LaMa).
 * **Technique:** Uses **Fast Fourier Convolutions (FFC)**. Unlike standard CNNs that struggle with large holes, LaMa analyzes the image in the frequency domain (global context) to synthesize seamless background textures (e.g., continuing a table pattern through the hole).
 
-## 🛠️ Tech Stack
+##  Tech Stack
 
 * **Core:** Python 3.9+, PyTorch
 * **Computer Vision:** Ultralytics YOLOv8, OpenCV (Morphological Ops)
 * **Inpainting:** SimpleLama (LaMa Wrapper)
 * **Interface:** Gradio (for Human-in-the-loop validation)
 
-## 📦 Installation & Usage
+##  Installation & Usage
 
 ```bash
 # 1. Clone the repository
