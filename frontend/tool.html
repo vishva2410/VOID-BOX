@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VoidBox — Redaction Tool</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <nav class="nav">
+        <div class="nav-inner">
+            <a href="index.html" class="nav-brand"><span class="brand-dot"></span> VoidBox</a>
+            <ul class="nav-links">
+                <li><a href="index.html" class="nav-link-hide">Home</a></li>
+                <li><a href="tool.html" class="active">Tool</a></li>
+                <li><a href="contact.html" class="nav-link-hide">Contact</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Spinner overlay -->
+    <div class="spinner-overlay" id="spinner">
+        <div class="spinner"></div>
+        <div class="spinner-text" id="spinnerText">Running detection pipeline...</div>
+    </div>
+
+    <div class="page">
+        <div class="container" style="padding-top: 40px; padding-bottom: 60px;">
+
+            <!-- Page header -->
+            <div style="margin-bottom: 36px; border-bottom: 1px solid var(--border); padding-bottom: 24px;">
+                <span class="label">Step 1 of 2</span>
+                <h2>Upload &amp; Configure</h2>
+                <p style="color: var(--text-secondary); font-size: 14px; margin-top: 6px;">
+                    Upload an image and select what to detect. Results appear on the next page.
+                </p>
+            </div>
+
+            <!-- Alert if backend down -->
+            <div class="alert alert-info" id="backendAlert" style="display:none;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="8" x2="12" y2="12" />
+                    <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+                <span>Backend is offline. Start <code>app.py</code> first to use the tool.</span>
+            </div>
+
+            <div class="grid-2" style="gap: 32px; align-items: start;">
+
+                <!-- Upload panel -->
+                <div>
+                    <h4 style="margin-bottom: 14px;">Image</h4>
+
+                    <div class="upload-zone" id="uploadZone">
+                        <input type="file" id="fileInput" accept="image/*" onchange="handleFile(this)">
+                        <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="1.5">
+                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                            <polyline points="17 8 12 3 7 8" />
+                            <line x1="12" y1="3" x2="12" y2="15" />
+                        </svg>
+                        <div class="upload-title">Drop image here or click to browse</div>
+                        <div class="upload-sub">PNG, JPEG, WEBP — processed locally</div>
+                    </div>
+
+                    <!-- Preview -->
+                    <div id="previewWrap" style="display:none; margin-top: 2px;">
+                        <img id="previewImg" class="upload-preview" alt="Preview">
+                        <div
+                            style="display: flex; justify-content: space-between; align-items: center;
+                        padding: 8px 12px; background: var(--bg-secondary); border: 1px solid var(--border); border-top: none;">
+                            <span id="previewMeta"
+                                style="font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);"></span>
+                            <button class="btn btn-outline btn-sm" onclick="clearImage()">Clear</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Settings panel -->
+                <div>
+                    <h4 style="margin-bottom: 20px;">Detection Settings</h4>
+
+                    <!-- YOLO classes -->
+                    <div class="form-group">
+                        <div class="form-label" style="margin-bottom: 12px;">YOLO Object Detection</div>
+                        <div class="checkbox-group">
+                            <label class="checkbox-item">
+                                <input type="checkbox" id="chk_documents" checked>
+                                <span class="checkbox-box"></span>
+                                <span>Documents &amp; ID cards</span>
+                            </label>
+                            <label class="checkbox-item">
+                                <input type="checkbox" id="chk_faces" checked>
+                                <span class="checkbox-box"></span>
+                                <span>Faces</span>
+                            </label>
+                            <label class="checkbox-item">
+                                <input type="checkbox" id="chk_signatures" checked>
+                                <span class="checkbox-box"></span>
+                                <span>Signatures</span>
+                            </label>
+                            <label class="checkbox-item">
+                                <input type="checkbox" id="chk_text_fields" checked>
+                                <span class="checkbox-box"></span>
+                                <span>Text fields</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Plates -->
+                    <div class="form-group">
+                        <div class="form-label" style="margin-bottom: 12px;">Haar Cascade</div>
+                        <div class="checkbox-group">
+                            <label class="checkbox-item">
+                                <input type="checkbox" id="chk_plates" checked>
+                                <span class="checkbox-box"></span>
+                                <span>License plates</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- OCR mode -->
+                    <div class="form-group">
+                        <div class="form-label" style="margin-bottom: 12px;">OCR Mode</div>
+                        <div class="radio-group">
+                            <label class="radio-item">
+                                <input type="radio" name="ocr_mode" value="smart" checked>
+                                <span class="radio-dot"></span>
+                                <span style="font-size: 14px; color: var(--text-primary);">Smart — PII patterns
+                                    only</span>
+                            </label>
+                            <label class="radio-item">
+                                <input type="radio" name="ocr_mode" value="all">
+                                <span class="radio-dot"></span>
+                                <span style="font-size: 14px; color: var(--text-primary);">Aggressive — erase all
+                                    text</span>
+                            </label>
+                            <label class="radio-item">
+                                <input type="radio" name="ocr_mode" value="off">
+                                <span class="radio-dot"></span>
+                                <span style="font-size: 14px; color: var(--text-primary);">Off — disable OCR</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Confidence -->
+                    <div class="form-group">
+                        <div class="form-label">OCR Confidence Threshold</div>
+                        <div class="slider-wrap">
+                            <input type="range" id="ocrConf" min="0.1" max="0.9" step="0.05" value="0.4"
+                                oninput="document.getElementById('ocrConfVal').textContent = parseFloat(this.value).toFixed(2)">
+                            <span class="slider-val" id="ocrConfVal">0.40</span>
+                        </div>
+                    </div>
+
+                    <!-- Preview mode -->
+                    <div class="form-group">
+                        <div class="form-label" style="margin-bottom: 12px;">Options</div>
+                        <label class="checkbox-item">
+                            <input type="checkbox" id="chk_preview">
+                            <span class="checkbox-box"></span>
+                            <span>Preview mode — annotate only, don't erase</span>
+                        </label>
+                    </div>
+
+                    <!-- Run -->
+                    <button class="btn btn-primary btn-lg" id="runBtn" onclick="runRedaction()" style="width: 100%;"
+                        disabled>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <polygon points="5 3 19 12 5 21 5 3" />
+                        </svg>
+                        Run Redaction
+                    </button>
+                    <p id="runStatus"
+                        style="margin-top: 10px; font-size: 13px; color: var(--text-muted); text-align: center;"></p>
+                </div>
+            </div>
+        </div>
+
+        <div class="container">
+            <div class="footer">
+                <span class="footer-text">VoidBox · Stage 9</span>
+                <a href="index.html" class="footer-text" style="color: var(--text-secondary);">← Back to home</a>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+    <script>
+        // Drag-and-drop
+        const zone = document.getElementById('uploadZone');
+        zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+        zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+        zone.addEventListener('drop', e => {
+            e.preventDefault();
+            zone.classList.remove('drag-over');
+            const f = e.dataTransfer.files[0];
+            if (f) loadFile(f);
+        });
+
+        // Check backend on load
+        fetch('/api/health').catch(() => {
+            document.getElementById('backendAlert').style.display = 'flex';
+        });
+    </script>
+</body>
+
+</html>

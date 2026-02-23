@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VoidBox — Results</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <nav class="nav">
+        <div class="nav-inner">
+            <a href="index.html" class="nav-brand"><span class="brand-dot"></span> VoidBox</a>
+            <ul class="nav-links">
+                <li><a href="index.html" class="nav-link-hide">Home</a></li>
+                <li><a href="tool.html" class="nav-link-hide">Tool</a></li>
+                <li><a href="contact.html" class="nav-link-hide">Contact</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <div class="page">
+        <div class="container" style="padding-top: 40px; padding-bottom: 60px;">
+
+            <!-- Page header -->
+            <div style="margin-bottom: 32px; border-bottom: 1px solid var(--border); padding-bottom: 24px;
+                  display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 16px;">
+                <div>
+                    <span class="label">Step 2 of 2</span>
+                    <h2>Redaction Results</h2>
+                    <p style="color: var(--text-secondary); font-size: 14px; margin-top: 6px;">
+                        Review the result, inspect detected text, and download the redacted image.
+                    </p>
+                </div>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <a href="tool.html" class="btn btn-outline">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <polyline points="15 18 9 12 15 6" />
+                        </svg>
+                        Process Another
+                    </a>
+                    <button class="btn btn-primary" id="downloadBtn" onclick="downloadResult()" disabled>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" />
+                        </svg>
+                        Download PNG
+                    </button>
+                </div>
+            </div>
+
+            <!-- No result state -->
+            <div id="noResult" class="empty">
+                <div class="empty-icon">🔍</div>
+                <p>No result to display. <a href="tool.html" style="color: var(--accent);">Upload an image</a> on the
+                    tool page first.</p>
+            </div>
+
+            <!-- Result content (hidden until data loaded) -->
+            <div id="resultContent" style="display: none;">
+
+                <!-- Summary Stats -->
+                <div class="stats-row" id="statsRow" style="margin-bottom: 28px;">
+                    <div class="stat-item">
+                        <div class="stat-value" id="statRegions">—</div>
+                        <div class="stat-label">Regions Detected</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="statMasked">—</div>
+                        <div class="stat-label">Masked Area</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="statOCR">—</div>
+                        <div class="stat-label">OCR PII Items</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="statStatus">—</div>
+                        <div class="stat-label">Status</div>
+                    </div>
+                </div>
+
+                <!-- Summary text -->
+                <div class="card" id="summaryCard"
+                    style="margin-bottom: 24px; font-size: 14px; line-height: 1.8; color: var(--text-secondary);">
+                </div>
+
+                <!-- Image comparison -->
+                <h4 style="margin-bottom: 14px;">Image Comparison</h4>
+                <div class="img-compare" style="margin-bottom: 28px;">
+                    <div class="img-compare-panel">
+                        <div class="img-compare-label">Original</div>
+                        <img id="originalImg" alt="Original"
+                            style="display:none; width:100%; height:360px; object-fit:contain; background: var(--bg-input);">
+                        <div id="noOriginal" class="empty"
+                            style="height:360px; display:flex; align-items:center; justify-content:center;">
+                            <p>No original stored</p>
+                        </div>
+                    </div>
+                    <div class="img-compare-panel">
+                        <div class="img-compare-label">Redacted</div>
+                        <img id="resultImg" alt="Redacted"
+                            style="width:100%; height:360px; object-fit:contain; background: var(--bg-input);">
+                    </div>
+                </div>
+
+                <!-- OCR Analysis Table -->
+                <h4 style="margin-bottom: 14px;">OCR Text Analysis</h4>
+                <div class="card" style="padding: 0;">
+                    <div class="table-wrap" id="ocrTableWrap">
+                        <div class="empty" style="padding: 32px;">
+                            <p>No OCR data available.</p>
+                        </div>
+                    </div>
+                </div>
+
+            </div><!-- /resultContent -->
+        </div>
+
+        <div class="container">
+            <div class="footer">
+                <span class="footer-text">VoidBox · Stage 9</span>
+                <a href="tool.html" class="footer-text" style="color: var(--text-secondary);">← Back to tool</a>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+    <script>
+        // Load result from sessionStorage
+        document.addEventListener('DOMContentLoaded', () => {
+            const raw = sessionStorage.getItem('voidbox_result');
+            if (!raw) return;
+
+            const data = JSON.parse(raw);
+            document.getElementById('noResult').style.display = 'none';
+            document.getElementById('resultContent').style.display = 'block';
+
+            // Images
+            document.getElementById('resultImg').src = data.result_image;
+            document.getElementById('downloadBtn').disabled = false;
+
+            const orig = sessionStorage.getItem('voidbox_original');
+            if (orig) {
+                document.getElementById('originalImg').src = orig;
+                document.getElementById('originalImg').style.display = 'block';
+                document.getElementById('noOriginal').style.display = 'none';
+            }
+
+            // Parse summary for stats
+            const summary = data.summary || '';
+            const regionMatch = summary.match(/(\d+)\s*mask region/);
+            const maskedMatch = summary.match(/([\d.]+)%\s*masked/);
+            const ocrMatch = summary.match(/OCR PII text:\s*(\d+)/);
+            const isClean = summary.includes('image is clean');
+
+            document.getElementById('statRegions').textContent = regionMatch ? regionMatch[1] : (isClean ? '0' : '—');
+            document.getElementById('statMasked').textContent = maskedMatch ? maskedMatch[1] + '%' : (isClean ? '0%' : '—');
+            document.getElementById('statOCR').textContent = ocrMatch ? ocrMatch[1] : '0';
+            document.getElementById('statStatus').textContent = isClean ? 'Clean' :
+                (summary.includes('AI-erased') ? 'Erased' : 'Preview');
+
+            // Summary text
+            document.getElementById('summaryCard').innerHTML =
+                summary.replace(/\*\*(.+?)\*\*/g, '<strong style="color:var(--text-primary)">$1</strong>')
+                    .replace(/\n/g, '<br>');
+
+            // OCR table
+            renderOcrTable(data.ocr_table || '');
+        });
+
+        function renderOcrTable(md) {
+            const wrap = document.getElementById('ocrTableWrap');
+            const rows = md.split('\n').filter(l => l.startsWith('|'));
+            if (rows.length < 3) { return; } // no data rows
+
+            const headers = rows[0].split('|').filter(c => c.trim());
+            const dataRows = rows.slice(2); // skip header + separator
+
+            let html = '<table><thead><tr>';
+            headers.forEach(h => { html += `<th>${h.trim()}</th>`; });
+            html += '</tr></thead><tbody>';
+
+            dataRows.forEach(row => {
+                const cells = row.split('|').filter(c => c.trim() !== undefined && row.indexOf('|') >= 0);
+                const cleaned = row.replace(/^\||\|$/g, '').split('|');
+                if (cleaned.length < 3) return;
+                const action = cleaned[2].trim();
+                html += `<tr>`;
+                cleaned.forEach((c, i) => {
+                    let cls = '';
+                    if (i === 2) cls = action === 'ERASED' ? 'erased' : 'kept';
+                    html += `<td class="${cls}">${c.replace(/`/g, '').trim()}</td>`;
+                });
+                html += '</tr>';
+            });
+            html += '</tbody></table>';
+            wrap.innerHTML = html;
+        }
+
+        function downloadResult() {
+            const src = document.getElementById('resultImg').src;
+            if (!src) return;
+            const a = document.createElement('a');
+            a.href = src;
+            a.download = 'voidbox_redacted.png';
+            a.click();
+        }
+    </script>
+</body>
+
+</html>
