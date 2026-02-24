@@ -67,11 +67,13 @@ _PII_PATTERNS = [
     (r"\b(?:\d{1,3}\.){3}\d{1,3}\b",                        "IPv4 address"),
     (r"\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b",         "Date"),
     (r"[A-Z0-9<]{8,}",                                       "MRZ / machine-readable code"),
+    (r"\b\d{3}-\d{2}-\d{4}\b",                               "US SSN"),
     # License plate patterns
     (r"\b[A-Z]{2}\s?\d{1,2}\s?[A-Z]{1,3}\s?\d{4}\b",      "License plate (IN)"),
     (r"\b[A-Z]{2}\s?\d{2}\s?[A-Z]{2}\s?\d{4}\b",           "License plate (IN alt)"),
     (r"\b[0-9]{1}[A-Z]{3}\s?[0-9]{3}\b",                   "License plate (US-style)"),
     (r"\b[A-Z]{2,3}\s?\d{3,4}\s?[A-Z]{0,3}\b",             "License plate (EU-style)"),
+    (r"\b[A-Z]{2}[0-9]{2}\s?[A-Z]{3}\b",                   "License plate (UK)"),
 ]
 
 _COMPILED = [(re.compile(p), label) for p, label in _PII_PATTERNS]
@@ -125,8 +127,8 @@ def _merge_boxes(boxes: list[tuple[int, int, int, int]]) -> list[tuple[int, int,
 
 def _proportional_expand(x1: int, y1: int, x2: int, y2: int,
                          img_h: int, img_w: int,
-                         base_frac: float = 0.15,
-                         min_px: int = 8, max_px: int = 40
+                         base_frac: float = 0.18,
+                         min_px: int = 12, max_px: int = 50
                          ) -> tuple[int, int, int, int]:
     """
     Expand a box proportionally based on its size.
@@ -206,15 +208,15 @@ def _adaptive_dilate(mask: np.ndarray, region_area: int, img_area: int) -> np.nd
 
     if frac < 0.005:
         # Very small region — dilate generously to cover fringe text
-        k = 9
+        k = 11
         iters = 2
     elif frac < 0.03:
         # Medium region — moderate dilation
-        k = 7
+        k = 9
         iters = 1
     else:
         # Large region — thin dilation only for edge smoothing
-        k = 5
+        k = 7
         iters = 1
 
     kernel = np.ones((k, k), np.uint8)
@@ -229,6 +231,38 @@ def _soft_edge_mask(mask: np.ndarray, ksize: int = 7) -> np.ndarray:
     """
     blurred = cv2.GaussianBlur(mask, (ksize, ksize), sigmaX=2.0)
     return np.where(blurred > 100, np.uint8(255), np.uint8(0))
+
+
+def _feather_alpha(mask: np.ndarray, ksize: int = 9) -> np.ndarray:
+    """
+    Create a soft alpha matte from a binary mask for seamless blending.
+    Ensures mask interior stays fully opaque, with a feathered edge.
+    """
+    mask = _make_binary(mask)
+    if ksize % 2 == 0:
+        ksize += 1
+    blurred = cv2.GaussianBlur(mask, (ksize, ksize), sigmaX=0)
+    alpha = blurred.astype(np.float32) / 255.0
+    alpha[mask == 255] = 1.0
+    return np.clip(alpha, 0.0, 1.0)
+
+
+def _blend_alpha(mask: np.ndarray, region_area: int, img_area: int) -> np.ndarray:
+    """
+    Build a size-adaptive alpha matte for compositing inpainted regions.
+    Slightly dilates the original mask, then feathers the edge.
+    """
+    frac = region_area / max(img_area, 1)
+    if frac < 0.005:
+        k = 11
+    elif frac < 0.03:
+        k = 9
+    else:
+        k = 7
+
+    kernel = np.ones((k, k), np.uint8)
+    dilated = cv2.dilate(mask, kernel, iterations=1)
+    return _feather_alpha(dilated, ksize=k + 2)
 
 
 def _safe_cv2_inpaint(image_bgr: np.ndarray, mask: np.ndarray,
@@ -381,7 +415,8 @@ def _inpaint_single_region(image_rgb: np.ndarray,
     h, w = image_rgb.shape[:2]
     img_area = h * w
     region_area = region_area or cv2.countNonZero(region_mask)
-    mask_bin = _ensure_mask_size(region_mask, h, w)
+    orig_mask = _ensure_mask_size(region_mask, h, w)
+    mask_bin = orig_mask.copy()
 
     # Step 1: Adaptive dilation — generous for small text, light for big regions
     mask_bin = _adaptive_dilate(mask_bin, region_area, img_area)
@@ -411,6 +446,11 @@ def _inpaint_single_region(image_rgb: np.ndarray,
 
     # Step 6: Color harmonization — match surrounding context
     result = _color_harmonize(result, mask_bin)
+
+    # Step 7: Feathered composite back onto the base image to avoid over-inpainting
+    alpha = _blend_alpha(orig_mask, region_area, img_area)
+    alpha_3 = alpha[..., None]
+    result = (result * alpha_3 + image_rgb * (1.0 - alpha_3)).astype(np.uint8)
 
     return result
 
@@ -625,7 +665,11 @@ def redact_pii(input_image,
 
     # ── Phase 2: EasyOCR Text Detection ───────────────────────────────────
     if ocr_mode != "off":
-        ocr_results = ocr_reader.readtext(image_rgb)
+        gray_image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        clahe_image = clahe.apply(gray_image)
+        
+        ocr_results = ocr_reader.readtext(clahe_image, mag_ratio=1.5, paragraph=False)
         ocr_pii_boxes = []
 
         for (bbox, text, prob) in ocr_results:
@@ -864,4 +908,3 @@ if __name__ == "__main__":
     print(f"  Frontend: http://localhost:7860")
     print(f"  API:      http://localhost:7860/api/health\n")
     flask_app.run(host="0.0.0.0", port=7860, debug=False)
-

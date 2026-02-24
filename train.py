@@ -129,10 +129,10 @@ def main():
         print(f"  Training Complete!")
         print(f"{'='*50}")
         
-        # Copy best model to project root
+        # Copy best model to models/ directory
         best_pt = Path("runs/voidbox/pii_detector/weights/best.pt")
         if best_pt.exists():
-            dest = Path("fine_tuned.pt")
+            dest = Path("models/fine_tuned.pt")
             shutil.copy2(best_pt, dest)
             print(f"\n✅ Best model saved to: {dest.resolve()}")
             print(f"   This model will be auto-loaded by app.py")

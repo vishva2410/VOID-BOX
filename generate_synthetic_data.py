@@ -9,7 +9,7 @@ DATASET_DIR = "datasets/custom_id_data"
 IMG_SIZE = (640, 640)
 NUM_TRAIN = 50
 NUM_VAL = 10
-CLASSES = {0: "id_card", 1: "face", 2: "text_field"}
+CLASSES = {0: "document", 1: "face", 2: "signature", 3: "text_field"}
 
 def create_directory_structure():
     for split in ["train", "val"]:
@@ -53,7 +53,24 @@ def generate_synthetic_image(image_id, split):
     w, h = photo_w/IMG_SIZE[0], photo_h/IMG_SIZE[1]
     labels.append(f"1 {xc:.6f} {yc:.6f} {w:.6f} {h:.6f}")
     
-    # 3. Text Fields (Name, ID, etc.)
+    # 3. Signature (bottom-left of card)
+    sig_w = int(card_w * 0.3)
+    sig_h = int(card_h * 0.15)
+    sx = x + int(card_w * 0.05)
+    sy = y + int(card_h * 0.78)
+    # Draw a simple signature-like squiggle
+    for _ in range(3):
+        x1s = sx + random.randint(0, sig_w // 2)
+        y1s = sy + random.randint(0, sig_h)
+        x2s = x1s + random.randint(10, sig_w // 2)
+        y2s = sy + random.randint(0, sig_h)
+        draw.line([(x1s, y1s), (x2s, y2s)], fill=(0, 0, 128), width=2)
+    
+    xc, yc = (sx + sig_w/2)/IMG_SIZE[0], (sy + sig_h/2)/IMG_SIZE[1]
+    w, h = sig_w/IMG_SIZE[0], sig_h/IMG_SIZE[1]
+    labels.append(f"2 {xc:.6f} {yc:.6f} {w:.6f} {h:.6f}")
+    
+    # 4. Text Fields (Name, ID, etc.)
     text_x_start = px + photo_w + 20
     for i in range(3):
         text_w = random.randint(int(card_w * 0.3), int(card_w * 0.5))
@@ -65,7 +82,7 @@ def generate_synthetic_image(image_id, split):
         
         xc, yc = (tx + text_w/2)/IMG_SIZE[0], (ty + text_h/2)/IMG_SIZE[1]
         w, h = text_w/IMG_SIZE[0], text_h/IMG_SIZE[1]
-        labels.append(f"2 {xc:.6f} {yc:.6f} {w:.6f} {h:.6f}")
+        labels.append(f"3 {xc:.6f} {yc:.6f} {w:.6f} {h:.6f}")
         
     # Save Image
     img_path = os.path.join(DATASET_DIR, "images", split, f"{image_id}.jpg")
@@ -83,9 +100,10 @@ train: images/train
 val: images/val
 
 names:
-  0: id_card
+  0: document
   1: face
-  2: text_field
+  2: signature
+  3: text_field
 """
     with open(os.path.join(DATASET_DIR, "data.yaml"), "w") as f:
         f.write(yaml_content.strip())
@@ -102,4 +120,4 @@ if __name__ == "__main__":
         
     create_yaml()
     print(f"Dataset generated at {DATASET_DIR}")
-    print("Classes: 0: id_card, 1: face, 2: text_field")
+    print("Classes: 0: document, 1: face, 2: signature, 3: text_field")

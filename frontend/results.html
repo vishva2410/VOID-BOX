@@ -173,31 +173,80 @@
 
         function renderOcrTable(md) {
             const wrap = document.getElementById('ocrTableWrap');
-            const rows = md.split('\n').filter(l => l.startsWith('|'));
-            if (rows.length < 3) { return; } // no data rows
+            if (!wrap) return;
 
-            const headers = rows[0].split('|').filter(c => c.trim());
-            const dataRows = rows.slice(2); // skip header + separator
+            const parsed = parseMarkdownTable(md || '');
+            if (!parsed || parsed.rows.length === 0) {
+                wrap.innerHTML = '<div class="empty" style="padding: 32px;"><p>No OCR data available.</p></div>';
+                return;
+            }
 
-            let html = '<table><thead><tr>';
-            headers.forEach(h => { html += `<th>${h.trim()}</th>`; });
-            html += '</tr></thead><tbody>';
-
-            dataRows.forEach(row => {
-                const cells = row.split('|').filter(c => c.trim() !== undefined && row.indexOf('|') >= 0);
-                const cleaned = row.replace(/^\||\|$/g, '').split('|');
-                if (cleaned.length < 3) return;
-                const action = cleaned[2].trim();
-                html += `<tr>`;
-                cleaned.forEach((c, i) => {
-                    let cls = '';
-                    if (i === 2) cls = action === 'ERASED' ? 'erased' : 'kept';
-                    html += `<td class="${cls}">${c.replace(/`/g, '').trim()}</td>`;
-                });
-                html += '</tr>';
+            wrap.textContent = '';
+            const table = document.createElement('table');
+            const thead = document.createElement('thead');
+            const headRow = document.createElement('tr');
+            parsed.headers.forEach(h => {
+                const th = document.createElement('th');
+                th.textContent = h;
+                headRow.appendChild(th);
             });
-            html += '</tbody></table>';
-            wrap.innerHTML = html;
+            thead.appendChild(headRow);
+            table.appendChild(thead);
+
+            const tbody = document.createElement('tbody');
+            parsed.rows.forEach(row => {
+                const tr = document.createElement('tr');
+                const action = row[2] ? row[2].trim() : '';
+                row.forEach((cell, i) => {
+                    const td = document.createElement('td');
+                    if (i === 2) td.className = action === 'ERASED' ? 'erased' : 'kept';
+                    td.textContent = cell.replace(/`/g, '').trim();
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+            table.appendChild(tbody);
+            wrap.appendChild(table);
+        }
+
+        function parseMarkdownTable(md) {
+            const lines = md.split('\n').filter(l => l.trim().startsWith('|'));
+            if (lines.length < 3) return null;
+
+            const headers = splitPipeRow(lines[0]);
+            const dataRows = lines.slice(2)
+                .map(splitPipeRow)
+                .filter(r => r.length >= 3);
+
+            return { headers, rows: dataRows };
+        }
+
+        function splitPipeRow(row) {
+            let trimmed = row.trim();
+            if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
+            if (trimmed.endsWith('|')) trimmed = trimmed.slice(0, -1);
+
+            const cells = [];
+            let current = '';
+            for (let i = 0; i < trimmed.length; i++) {
+                const ch = trimmed[i];
+                if (ch === '\\' && i + 1 < trimmed.length) {
+                    const next = trimmed[i + 1];
+                    if (next === '|' || next === '\\') {
+                        current += next;
+                        i += 1;
+                        continue;
+                    }
+                }
+                if (ch === '|') {
+                    cells.push(current.trim());
+                    current = '';
+                    continue;
+                }
+                current += ch;
+            }
+            cells.push(current.trim());
+            return cells;
         }
 
         function downloadResult() {
