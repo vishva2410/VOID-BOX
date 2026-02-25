@@ -20,7 +20,7 @@
 
 ## 🏗️ Architecture
 
-```mermaid
+```
 graph TD
     A[Input Image] --> B{Detection Layer}
     
