@@ -100,6 +100,7 @@ async function runRedaction() {
         ocr_mode: ocrMode,
         ocr_confidence: parseFloat(document.getElementById('ocrConf')?.value ?? '0.4'),
         show_detections: document.getElementById('chk_preview')?.checked ?? false,
+        fast_mode: document.getElementById('chk_fast')?.checked ?? false,
     };
 
     // UI: disable button, show spinner
@@ -121,9 +122,15 @@ async function runRedaction() {
             throw new Error(data.error || `HTTP ${resp.status}`);
         }
 
-        // Store in sessionStorage for results.html
-        sessionStorage.setItem('voidbox_result', JSON.stringify(data));
-        sessionStorage.setItem('voidbox_original', currentFileB64);
+        // Store a small result id (avoid large base64 in sessionStorage)
+        if (data.result_id) {
+            sessionStorage.setItem('voidbox_result_id', data.result_id);
+            sessionStorage.removeItem('voidbox_result');
+            sessionStorage.removeItem('voidbox_original');
+        } else {
+            sessionStorage.setItem('voidbox_result', JSON.stringify(data));
+            sessionStorage.setItem('voidbox_original', currentFileB64);
+        }
 
         // Navigate to results
         window.location.href = 'results.html';

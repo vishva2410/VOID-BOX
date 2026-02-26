@@ -18,9 +18,12 @@ Multi-modal, context-aware privacy pipeline:
 """
 
 import re
+import time
 import base64
 import io
 import json
+import uuid
+import threading
 from flask import Flask, request, jsonify, send_from_directory, send_file
 from ultralytics import YOLO
 import cv2
@@ -47,6 +50,12 @@ LARGE_REGION_WARN_FRAC = 0.08  # 8% — expect quality drop above this
 # Minimum bounding box area in pixels — boxes smaller than this are noise
 MIN_BOX_AREA = 100
 
+# Result cache (frontend uses this to avoid large sessionStorage payloads)
+RESULT_TTL_SEC = 30 * 60
+RESULT_MAX_ITEMS = 20
+_RESULT_LOCK = threading.Lock()
+_RESULT_STORE: dict[str, dict] = {}
+
 # License plate Haar cascade — ships with OpenCV, no extra download
 _PLATE_CASCADE_PATH = cv2.data.haarcascades + "haarcascade_russian_plate_number.xml"
 _plate_cascade = cv2.CascadeClassifier(_PLATE_CASCADE_PATH)
@@ -57,8 +66,11 @@ PLATE_COLOR = (0, 200, 200)  # cyan for annotation
 
 _PII_PATTERNS = [
     (r"\b\d{12}\b",                                          "12-digit (Aadhaar-style)"),
+    (r"\b(?:\d{4}[-\s]?){2}\d{4}\b",                         "12-digit (with separators)"),
     (r"\b\d{16}\b",                                          "16-digit (card number)"),
+    (r"\b(?:\d{4}[-\s]?){3}\d{4}\b",                         "16-digit (with separators)"),
     (r"\b\d{10}\b",                                          "10-digit (phone/ID)"),
+    (r"\b(?:\+?\d{1,3}[-\s]?)?(?:\d{3}[-\s]?){2}\d{4}\b",     "Phone (with separators)"),
     (r"\b\d{8,9}\b",                                         "8-9 digit ID"),
     (r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",    "Email"),
     (r"\b[A-Z][0-9]{7}\b",                                   "Passport code"),
@@ -68,6 +80,7 @@ _PII_PATTERNS = [
     (r"\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b",         "Date"),
     (r"[A-Z0-9<]{8,}",                                       "MRZ / machine-readable code"),
     (r"\b\d{3}-\d{2}-\d{4}\b",                               "US SSN"),
+    (r"\b\d{3}[-\s]?\d{2}[-\s]?\d{4}\b",                     "US SSN (with separators)"),
     # License plate patterns
     (r"\b[A-Z]{2}\s?\d{1,2}\s?[A-Z]{1,3}\s?\d{4}\b",      "License plate (IN)"),
     (r"\b[A-Z]{2}\s?\d{2}\s?[A-Z]{2}\s?\d{4}\b",           "License plate (IN alt)"),
@@ -77,6 +90,40 @@ _PII_PATTERNS = [
 ]
 
 _COMPILED = [(re.compile(p), label) for p, label in _PII_PATTERNS]
+
+
+def _cleanup_result_store(now_ts: float) -> None:
+    """Evict old entries from the in-memory result cache."""
+    expired = []
+    for key, item in _RESULT_STORE.items():
+        if now_ts - item.get("ts", 0) > RESULT_TTL_SEC:
+            expired.append(key)
+    for key in expired:
+        _RESULT_STORE.pop(key, None)
+
+    if len(_RESULT_STORE) <= RESULT_MAX_ITEMS:
+        return
+
+    overflow = len(_RESULT_STORE) - RESULT_MAX_ITEMS
+    oldest = sorted(_RESULT_STORE.items(), key=lambda kv: kv[1].get("ts", 0))[:overflow]
+    for key, _ in oldest:
+        _RESULT_STORE.pop(key, None)
+
+
+def _store_result(result_b64: str, ocr_table: str, summary: str,
+                  original_b64: str | None = None) -> str:
+    now_ts = time.time()
+    result_id = uuid.uuid4().hex
+    with _RESULT_LOCK:
+        _RESULT_STORE[result_id] = {
+            "result_image": result_b64,
+            "ocr_table": ocr_table,
+            "summary": summary,
+            "original_image": original_b64,
+            "ts": now_ts,
+        }
+        _cleanup_result_store(now_ts)
+    return result_id
 
 
 def classify_text(text: str) -> tuple[bool, str]:
@@ -398,7 +445,9 @@ def _poisson_blend(base_rgb: np.ndarray, inpainted_rgb: np.ndarray,
 def _inpaint_single_region(image_rgb: np.ndarray,
                             region_mask: np.ndarray,
                             lama_model,
-                            region_area: int = 0) -> np.ndarray:
+                            region_area: int = 0,
+                            img_area_ref: int | None = None,
+                            fast_mode: bool = False) -> np.ndarray:
     """
     Production-grade inpainting for one connected region.
 
@@ -413,7 +462,7 @@ def _inpaint_single_region(image_rgb: np.ndarray,
     All operations are size-safe.
     """
     h, w = image_rgb.shape[:2]
-    img_area = h * w
+    img_area = img_area_ref if img_area_ref else (h * w)
     region_area = region_area or cv2.countNonZero(region_mask)
     orig_mask = _ensure_mask_size(region_mask, h, w)
     mask_bin = orig_mask.copy()
@@ -428,7 +477,10 @@ def _inpaint_single_region(image_rgb: np.ndarray,
 
     # Step 3: Context-aware Telea radius
     frac = region_area / max(img_area, 1)
-    telea_radius = 5 if frac < 0.01 else (12 if frac > 0.05 else 7)
+    if fast_mode:
+        telea_radius = 5 if frac < 0.02 else 9
+    else:
+        telea_radius = 5 if frac < 0.01 else (12 if frac > 0.05 else 7)
 
     telea_bgr = _safe_cv2_inpaint(
         cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR), mask_bin,
@@ -436,13 +488,22 @@ def _inpaint_single_region(image_rgb: np.ndarray,
     )
     result = cv2.cvtColor(telea_bgr, cv2.COLOR_BGR2RGB)
 
-    # Step 4: Adaptive LaMa passes — more passes for larger/harder regions
-    num_lama = 3 if frac > 0.03 else 2
-    for pass_n in range(num_lama):
-        result = _safe_lama(result, mask_bin, lama_model)
+    # Step 4: Adaptive LaMa passes — heavily optimized for speed
+    # 1 pass is usually sufficient. 2 passes only for very large regions.
+    if fast_mode:
+        # Skip LaMa for very small regions; use a single pass otherwise.
+        if frac >= 0.02:
+            result = _safe_lama(result, mask_bin, lama_model)
+    else:
+        num_lama = 2 if frac > 0.08 else 1
+        for pass_n in range(num_lama):
+            result = _safe_lama(result, mask_bin, lama_model)
 
     # Step 5: Poisson seamless blend — removes hard seams at borders
-    result = _poisson_blend(image_rgb, result, mask_bin)
+    # Optimization: Poisson clone is extremely slow on CPU/MPS for small text regions.
+    # We skip it for small regions because soft alpha feathering handles them perfectly.
+    if not fast_mode and frac > 0.01:
+        result = _poisson_blend(image_rgb, result, mask_bin)
 
     # Step 6: Color harmonization — match surrounding context
     result = _color_harmonize(result, mask_bin)
@@ -457,7 +518,8 @@ def _inpaint_single_region(image_rgb: np.ndarray,
 
 def per_region_inpaint(image_rgb: np.ndarray,
                        mask: np.ndarray,
-                       lama_model) -> Image.Image:
+                       lama_model,
+                       fast_mode: bool = False) -> Image.Image:
     """
     Per-region inpainting: split mask into connected components,
     inpaint each separately, composite results.
@@ -479,20 +541,43 @@ def per_region_inpaint(image_rgb: np.ndarray,
 
     result = image_rgb.copy()
     regions_processed = 0
+    img_area_ref = h * w
 
     for i in range(1, num_labels):  # skip background
         area = stats[i, cv2.CC_STAT_AREA]
         if area < MIN_BOX_AREA:
             continue
 
-        region_mask = np.where(labels == i, np.uint8(255), np.uint8(0))
+        left = stats[i, cv2.CC_STAT_LEFT]
+        top = stats[i, cv2.CC_STAT_TOP]
+        width = stats[i, cv2.CC_STAT_WIDTH]
+        height = stats[i, cv2.CC_STAT_HEIGHT]
 
-        region_frac = area / (h * w)
+        # Crop to region with padding to drastically reduce compute
+        pad = max(16, int(max(width, height) * (0.25 if fast_mode else 0.35)))
+        pad = min(pad, 96 if not fast_mode else 64)
+        x1 = max(0, left - pad)
+        y1 = max(0, top - pad)
+        x2 = min(w, left + width + pad)
+        y2 = min(h, top + height + pad)
+
+        crop_img = result[y1:y2, x1:x2]
+        crop_labels = labels[y1:y2, x1:x2]
+        region_mask = np.where(crop_labels == i, np.uint8(255), np.uint8(0))
+
+        region_frac = area / img_area_ref
         if region_frac > LARGE_REGION_WARN_FRAC:
             print(f"    ⚠  Region {i}: {region_frac:.1%} of image — quality may degrade")
 
-        result = _inpaint_single_region(result, region_mask, lama_model,
-                                         region_area=area)
+        crop_out = _inpaint_single_region(
+            crop_img,
+            region_mask,
+            lama_model,
+            region_area=area,
+            img_area_ref=img_area_ref,
+            fast_mode=fast_mode,
+        )
+        result[y1:y2, x1:x2] = crop_out
         regions_processed += 1
 
     print(f"    Inpainted {regions_processed} region(s)")
@@ -554,7 +639,8 @@ def redact_pii(input_image,
                redact_plates,
                ocr_mode,
                ocr_confidence,
-               show_detections):
+               show_detections,
+               fast_mode: bool = False):
     """
     Full PII redaction pipeline with robust mask engineering.
 
@@ -593,9 +679,17 @@ def redact_pii(input_image,
 
     # Track all object regions for OCR gap-filling
     all_object_boxes = []
+    
+    # Init timing
+    t_start = time.time()
 
     # ── Phase 1: YOLO Object Detection ────────────────────────────────────
-    yolo_results = yolo_model(image_bgr, device=device, verbose=False)[0]
+    print("  [Perf] Starting YOLO detection...")
+    t0 = time.time()
+    if fast_mode:
+        yolo_results = yolo_model(image_bgr, imgsz=960, device=device, verbose=False)[0]
+    else:
+        yolo_results = yolo_model(image_bgr, device=device, verbose=False)[0]
     yolo_boxes = []
 
     for box in yolo_results.boxes:
@@ -631,8 +725,12 @@ def redact_pii(input_image,
         ex1, ey1, ex2, ey2 = _proportional_expand(bx1, by1, bx2, by2, h, w)
         _draw_rounded_rect(mask, ex1, ey1, ex2, ey2)
         all_object_boxes.append((ex1, ey1, ex2, ey2))
+        
+    print(f"  [Perf] YOLO detection done in {time.time() - t0:.2f}s")
 
     # ── Phase 1.5: License Plate Detection (Haar Cascade) ─────────────────
+    print("  [Perf] Starting Plate detection...")
+    t0 = time.time()
     plate_boxes = []
     if redact_plates and not _plate_cascade.empty():
         gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
@@ -663,18 +761,38 @@ def redact_pii(input_image,
         _draw_rounded_rect(mask, ex1, ey1, ex2, ey2)
         all_object_boxes.append((ex1, ey1, ex2, ey2))
 
-    # ── Phase 2: EasyOCR Text Detection ───────────────────────────────────
+    print(f"  [Perf] Plate detection done in {time.time() - t0:.2f}s")
+
+    # ── Phase 2: EasyOCR Text Detection (Optimized for Speed) ─────────────
+    # Text detection is the biggest latency bottleneck.
+    print("  [Perf] Starting EasyOCR detection...")
+    t0 = time.time()
     if ocr_mode != "off":
         gray_image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        clahe_image = clahe.apply(gray_image)
+        # Resize image for OCR if it's too large to save severe latency
+        resize_factor = 1.0
+        max_dim = 900 if fast_mode else 1200
+        if max(h, w) > max_dim:
+            resize_factor = max_dim / max(h, w)
+            new_w, new_h = int(w * resize_factor), int(h * resize_factor)
+            ocr_input = cv2.resize(gray_image, (new_w, new_h))
+        else:
+            ocr_input = gray_image
+            
+        clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+        clahe_image = clahe.apply(ocr_input)
         
-        ocr_results = ocr_reader.readtext(clahe_image, mag_ratio=1.5, paragraph=False)
+        # mag_ratio reduced back to 1.0; 1.5 causes 3x compute times for OCR
+        ocr_results = ocr_reader.readtext(clahe_image, mag_ratio=1.0, paragraph=False)
         ocr_pii_boxes = []
 
         for (bbox, text, prob) in ocr_results:
             if prob < ocr_confidence:
                 continue
+                
+            # If resized, scale bounding boxes back to original image size
+            if resize_factor != 1.0:
+                bbox = [[pt[0] / resize_factor, pt[1] / resize_factor] for pt in bbox]
 
             sensitive, pattern_label = classify_text(text)
             should_erase = sensitive if ocr_mode == "smart" else True
@@ -730,6 +848,8 @@ def redact_pii(input_image,
         for bx1, by1, bx2, by2 in merged_ocr:
             ex1, ey1, ex2, ey2 = _proportional_expand(bx1, by1, bx2, by2, h, w)
             _draw_rounded_rect(mask, ex1, ey1, ex2, ey2)
+            
+    print(f"  [Perf] EasyOCR detection done in {time.time() - t0:.2f}s")
 
     # ── Mask Statistics Logging ────────────────────────────────────────────
     mask_binary = _make_binary(mask)
@@ -777,17 +897,26 @@ def redact_pii(input_image,
             summary_parts.append(f"  - OCR safe text (kept): {counts['ocr_safe']}")
 
     summary = "\n".join(summary_parts)
+    if fast_mode:
+        summary += "\n\nFast mode enabled — lower latency, slightly reduced quality."
 
     # ── Preview mode ──────────────────────────────────────────────────────
     if show_detections:
         out = Image.fromarray(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB))
+        summary += "\n\nPreview mode enabled — no redaction performed."
         return out, ocr_table_md, summary
 
     if mask_binary.max() == 0:
         return input_image, ocr_table_md, summary
 
     # ── Phase 3: Per-Region Hybrid Inpainting ─────────────────────────────
-    result_image = per_region_inpaint(image_rgb, mask, simple_lama)
+    print("  [Perf] Starting Inpainting...")
+    t0 = time.time()
+    result_image = per_region_inpaint(image_rgb, mask, simple_lama, fast_mode=fast_mode)
+    print(f"  [Perf] Inpainting done in {time.time() - t0:.2f}s")
+    
+    print(f"  [Perf] TOTAL PIPELINE DONE IN {time.time() - t_start:.2f}s")
+    
     summary += "\n\nAll flagged PII has been AI-erased (per-region hybrid inpainting)."
     return result_image, ocr_table_md, summary
 
@@ -835,24 +964,31 @@ def api_redact():
         "redact_plates": bool,
         "ocr_mode": "smart"|"all"|"off",
         "ocr_confidence": float,
+        "fast_mode": bool,
         "show_detections": bool
       }
     Returns JSON:
       {
         "result_image": "<base64-encoded PNG>",
         "ocr_table": "<markdown string>",
-        "summary": "<markdown string>"
+        "summary": "<markdown string>",
+        "result_id": "<cache id>"
       }
     """
     try:
         data = request.get_json(force=True)
 
         # Decode image
-        img_b64 = data.get("image", "")
-        if "," in img_b64:
-            img_b64 = img_b64.split(",", 1)[1]
-        img_bytes = base64.b64decode(img_b64)
-        pil_input = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        orig_data_url = data.get("image", "") or ""
+        img_b64 = orig_data_url
+        if "base64," in img_b64:
+            img_b64 = img_b64.split("base64,")[1]
+            
+        try:
+            img_bytes = base64.b64decode(img_b64)
+            pil_input = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        except Exception as e:
+            return jsonify({"error": f"Invalid image encoding: {str(e)}"}), 400
 
         # Run pipeline
         result_pil, ocr_table, summary = redact_pii(
@@ -865,6 +1001,7 @@ def api_redact():
             ocr_mode          = data.get("ocr_mode", "smart"),
             ocr_confidence    = float(data.get("ocr_confidence", 0.4)),
             show_detections   = bool(data.get("show_detections", False)),
+            fast_mode         = bool(data.get("fast_mode", False)),
         )
 
         # Encode result
@@ -876,16 +1013,34 @@ def api_redact():
             Image.fromarray(np.array(result_pil)).save(buf, format="PNG")
         result_b64 = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
+        result_id = _store_result(result_b64, ocr_table, summary, original_b64=orig_data_url)
+
         return jsonify({
             "result_image": result_b64,
             "ocr_table": ocr_table,
             "summary": summary,
+            "result_id": result_id,
         })
 
     except Exception as exc:
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(exc)}), 500
+
+
+@flask_app.route("/api/result/<result_id>", methods=["GET"])
+def api_result(result_id: str):
+    """Fetch a cached redaction result by id."""
+    now_ts = time.time()
+    with _RESULT_LOCK:
+        _cleanup_result_store(now_ts)
+        item = _RESULT_STORE.get(result_id)
+
+    if not item:
+        return jsonify({"error": "Result not found or expired."}), 404
+
+    payload = {k: v for k, v in item.items() if k != "ts"}
+    return jsonify(payload)
 
 
 @flask_app.route("/api/download-model", methods=["GET"])

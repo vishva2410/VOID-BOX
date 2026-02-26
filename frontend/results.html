@@ -129,12 +129,30 @@
 
     <script src="app.js"></script>
     <script>
-        // Load result from sessionStorage
-        document.addEventListener('DOMContentLoaded', () => {
+        // Load result from cache id or sessionStorage
+        document.addEventListener('DOMContentLoaded', async () => {
+            const resultId = sessionStorage.getItem('voidbox_result_id');
+            if (resultId) {
+                try {
+                    const resp = await fetch(`/api/result/${resultId}`);
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        loadResult(data);
+                        return;
+                    }
+                } catch (err) {
+                    // fall through to sessionStorage
+                }
+            }
+
             const raw = sessionStorage.getItem('voidbox_result');
             if (!raw) return;
-
             const data = JSON.parse(raw);
+            const orig = sessionStorage.getItem('voidbox_original');
+            loadResult(data, orig);
+        });
+
+        function loadResult(data, origOverride) {
             document.getElementById('noResult').style.display = 'none';
             document.getElementById('resultContent').style.display = 'block';
 
@@ -142,7 +160,7 @@
             document.getElementById('resultImg').src = data.result_image;
             document.getElementById('downloadBtn').disabled = false;
 
-            const orig = sessionStorage.getItem('voidbox_original');
+            const orig = origOverride || data.original_image;
             if (orig) {
                 document.getElementById('originalImg').src = orig;
                 document.getElementById('originalImg').style.display = 'block';
@@ -169,7 +187,7 @@
 
             // OCR table
             renderOcrTable(data.ocr_table || '');
-        });
+        }
 
         function renderOcrTable(md) {
             const wrap = document.getElementById('ocrTableWrap');
