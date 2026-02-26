@@ -38,10 +38,10 @@ from PIL import Image
 # ─── PII Class Configuration ──────────────────────────────────────────────────
 
 PII_CLASSES = {
-    0: {"name": "document",   "color": (255, 100, 100), "conf": 0.45},
-    1: {"name": "face",       "color": (100, 255, 100), "conf": 0.55},
-    2: {"name": "signature",  "color": (100, 100, 255), "conf": 0.40},
-    3: {"name": "text_field", "color": (255, 255, 100), "conf": 0.35},
+    0: {"name": "document",   "color": (255, 100, 100), "conf": 0.45, "min_area": 500},
+    1: {"name": "face",       "color": (100, 255, 100), "conf": 0.55, "min_area": 120},
+    2: {"name": "signature",  "color": (100, 100, 255), "conf": 0.30, "min_area": 60},
+    3: {"name": "text_field", "color": (255, 255, 100), "conf": 0.35, "min_area": 80},
 }
 
 # Warn when masked area exceeds this fraction of total image area
@@ -61,6 +61,11 @@ _PLATE_CASCADE_PATH = cv2.data.haarcascades + "haarcascade_russian_plate_number.
 _plate_cascade = cv2.CascadeClassifier(_PLATE_CASCADE_PATH)
 PLATE_COLOR = (0, 200, 200)  # cyan for annotation
 
+# Face Haar cascade (fallback for passport-size photos)
+_FACE_CASCADE_PATH = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+_face_cascade = cv2.CascadeClassifier(_FACE_CASCADE_PATH)
+FACE_COLOR = (0, 180, 255)  # orange for annotation
+
 
 # ─── PII Pattern Definitions ──────────────────────────────────────────────────
 
@@ -71,9 +76,13 @@ _PII_PATTERNS = [
     (r"\b(?:\d{4}[-\s]?){3}\d{4}\b",                         "16-digit (with separators)"),
     (r"\b\d{10}\b",                                          "10-digit (phone/ID)"),
     (r"\b(?:\+?\d{1,3}[-\s]?)?(?:\d{3}[-\s]?){2}\d{4}\b",     "Phone (with separators)"),
+    (r"\b(?:\+?1[-.\s]?)?(?:\(\d{3}\)|\d{3})[-.\s]?\d{3}[-.\s]?\d{4}\b",
+     "Phone (US format)"),
     (r"\b\d{8,9}\b",                                         "8-9 digit ID"),
     (r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",    "Email"),
     (r"\b[A-Z][0-9]{7}\b",                                   "Passport code"),
+    (r"\b[A-Z]{2}[0-9]{7}\b",                                "Passport code (2-letter)"),
+    (r"\b[A-Z][0-9]{8}\b",                                   "Passport code (8-digit)"),
     (r"\b[A-Z]{5}[0-9]{4}[A-Z]\b",                          "PAN-style ID"),
     (r"\b[A-Z]{2}[0-9]{6,8}\b",                             "Alphanumeric ID"),
     (r"\b(?:\d{1,3}\.){3}\d{1,3}\b",                        "IPv4 address"),
@@ -184,6 +193,18 @@ def _proportional_expand(x1: int, y1: int, x2: int, y2: int,
     """
     bw = x2 - x1
     bh = y2 - y1
+    img_area = img_h * img_w
+    box_area = max(0, bw) * max(0, bh)
+    frac = box_area / max(img_area, 1)
+
+    # Reduce expansion for very large boxes to avoid masking full IDs
+    if frac > 0.12:
+        base_frac = min(base_frac, 0.08)
+        max_px = min(max_px, 28)
+    elif frac > 0.05:
+        base_frac = min(base_frac, 0.12)
+        max_px = min(max_px, 36)
+
     pad = int(max(bw, bh) * base_frac)
     pad = max(min_px, min(pad, max_px))
 
@@ -624,6 +645,11 @@ try:
         print("  Plates:  WARNING -- Haar cascade not found, plate detection disabled")
     else:
         print("  Plates:  Haar cascade loaded")
+
+    if _face_cascade.empty():
+        print("  Faces:   WARNING -- Haar cascade not found, face fallback disabled")
+    else:
+        print("  Faces:   Haar cascade loaded (fallback)")
     print("=" * 60)
 
 except Exception as e:
@@ -678,7 +704,8 @@ def redact_pii(input_image,
     annotated = image_bgr.copy() if show_detections else None
 
     # Track all object regions for OCR gap-filling
-    all_object_boxes = []
+    yolo_boxes_by_label = {v["name"]: [] for v in PII_CLASSES.values()}
+    gap_fill_boxes: list[tuple[int, int, int, int]] = []
     
     # Init timing
     t_start = time.time()
@@ -690,8 +717,6 @@ def redact_pii(input_image,
         yolo_results = yolo_model(image_bgr, imgsz=960, device=device, verbose=False)[0]
     else:
         yolo_results = yolo_model(image_bgr, device=device, verbose=False)[0]
-    yolo_boxes = []
-
     for box in yolo_results.boxes:
         cls_id = int(box.cls[0])
         conf   = float(box.conf[0])
@@ -703,11 +728,12 @@ def redact_pii(input_image,
 
         x1, y1, x2, y2 = map(int, box.xyxy[0])
 
-        # Min area filter — skip noise
-        if _box_area(x1, y1, x2, y2) < MIN_BOX_AREA:
+        # Min area filter — skip noise (class-aware)
+        min_area = cls_info.get("min_area", MIN_BOX_AREA)
+        if _box_area(x1, y1, x2, y2) < min_area:
             continue
 
-        yolo_boxes.append((x1, y1, x2, y2))
+        yolo_boxes_by_label[cls_info["name"]].append((x1, y1, x2, y2))
         counts[cls_info["name"]] += 1
 
         if show_detections:
@@ -719,12 +745,48 @@ def redact_pii(input_image,
             cv2.putText(annotated, lbl, (x1 + 2, y1 - 4),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1)
 
-    # Merge overlapping YOLO boxes → proportional expand → rounded rect mask
-    merged_yolo = _merge_boxes(yolo_boxes)
-    for bx1, by1, bx2, by2 in merged_yolo:
-        ex1, ey1, ex2, ey2 = _proportional_expand(bx1, by1, bx2, by2, h, w)
-        _draw_rounded_rect(mask, ex1, ey1, ex2, ey2)
-        all_object_boxes.append((ex1, ey1, ex2, ey2))
+    # Optional face cascade fallback (passport-size photos)
+    if redact_faces and not _face_cascade.empty():
+        gray_full = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+        faces = _face_cascade.detectMultiScale(
+            gray_full, scaleFactor=1.1, minNeighbors=5, minSize=(24, 24),
+        )
+        for (fx, fy, fw, fh) in faces:
+            x1, y1, x2, y2 = fx, fy, fx + fw, fy + fh
+            if _box_area(x1, y1, x2, y2) < MIN_BOX_AREA:
+                continue
+            # Skip if overlaps an existing YOLO face
+            if any(_boxes_overlap((x1, y1, x2, y2), b) for b in yolo_boxes_by_label["face"]):
+                continue
+            yolo_boxes_by_label["face"].append((x1, y1, x2, y2))
+            counts["face"] += 1
+            if show_detections:
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), FACE_COLOR, 2)
+                lbl = "face (cascade)"
+                (tw, th_t), _ = cv2.getTextSize(lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+                cv2.rectangle(annotated, (x1, y1 - th_t - 8), (x1 + tw + 4, y1), FACE_COLOR, -1)
+                cv2.putText(annotated, lbl, (x1 + 2, y1 - 4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1)
+
+    # Merge boxes by label → proportional expand → rounded rect mask
+    mask_labels = {"face", "signature", "text_field"}
+    if redact_documents and ocr_mode == "off":
+        mask_labels.add("document")
+
+    gap_fill_labels = {"plate", "text_field"}
+    gap_fill_max_frac = 0.12
+
+    for label, boxes in yolo_boxes_by_label.items():
+        if not boxes:
+            continue
+        merged = _merge_boxes(boxes)
+        for bx1, by1, bx2, by2 in merged:
+            ex1, ey1, ex2, ey2 = _proportional_expand(bx1, by1, bx2, by2, h, w)
+            if label in mask_labels:
+                _draw_rounded_rect(mask, ex1, ey1, ex2, ey2)
+            box_area = _box_area(ex1, ey1, ex2, ey2)
+            if label in gap_fill_labels and (box_area / max(h * w, 1)) <= gap_fill_max_frac:
+                gap_fill_boxes.append((ex1, ey1, ex2, ey2))
         
     print(f"  [Perf] YOLO detection done in {time.time() - t0:.2f}s")
 
@@ -759,7 +821,7 @@ def redact_pii(input_image,
     for bx1, by1, bx2, by2 in merged_plates:
         ex1, ey1, ex2, ey2 = _proportional_expand(bx1, by1, bx2, by2, h, w)
         _draw_rounded_rect(mask, ex1, ey1, ex2, ey2)
-        all_object_boxes.append((ex1, ey1, ex2, ey2))
+        gap_fill_boxes.append((ex1, ey1, ex2, ey2))
 
     print(f"  [Perf] Plate detection done in {time.time() - t0:.2f}s")
 
@@ -827,7 +889,7 @@ def redact_pii(input_image,
         # object region — prevents fragmented holes on plates/IDs.
         filled_boxes = []
         used_ocr = set()
-        for obj_box in all_object_boxes:
+        for obj_box in gap_fill_boxes:
             group = []
             for idx, ocr_box in enumerate(ocr_pii_boxes):
                 if idx in used_ocr:
@@ -897,6 +959,10 @@ def redact_pii(input_image,
             summary_parts.append(f"  - OCR safe text (kept): {counts['ocr_safe']}")
 
     summary = "\n".join(summary_parts)
+    if redact_documents and ocr_mode != "off":
+        summary += "\n\nDocument masking is limited when OCR is enabled to avoid erasing entire IDs."
+    if redact_signatures and not using_pii_model:
+        summary += "\n\nSignature detection is limited without the fine-tuned PII model."
     if fast_mode:
         summary += "\n\nFast mode enabled — lower latency, slightly reduced quality."
 
