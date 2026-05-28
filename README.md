@@ -1,6 +1,6 @@
 <div align="center">
   <h1>🛡️ VoidBox</h1>
-  <h3>Multi-Modal PII Detection and Redaction Engine</h3>
+  <h3>Multi-Modal PII Detection and Redaction Engine</h3> 
   
   <p>
     <img src="https://img.shields.io/badge/Python-3.10+-blue.svg" alt="Python Version">
