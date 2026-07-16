@@ -106,7 +106,7 @@ Stage 9      + Robust Mask Engineering
 | **Text Detection** | EasyOCR + CLAHE Optimization | All visible text in the image (even low contrast) |
 | **PII Classification** | Regex Engine | Filters text into sensitive vs safe |
 
-### PII Patterns Recognised
+### PII Patterns Recognised (25 patterns across 11 categories)
 | Category | Pattern | Example |
 |----------|---------|---------|
 | **Aadhaar-style** | 12-digit number | `123456789012` |
@@ -134,21 +134,25 @@ Stage 9      + Robust Mask Engineering
 
 ```
 yolov8_project/
-|-- app.py                     Main application (Gradio UI + pipeline)
-|-- train.py                   YOLOv8 fine-tuning script
-|-- download_midv2020.py       Dataset downloader (Roboflow API)
-|-- prepare_dataset.py         Dataset validation and class remapping
-|-- prepare_signatures.py      Signature dataset preparation for YOLO
-|-- generate_synthetic_data.py Synthetic ID card generator (bootstrap)
+|-- app.py                         Main Flask application + full pipeline
 |-- models/
-|   |-- fine_tuned.pt          Fine-tuned PII detection model
-|   |-- yolov8n.pt             Base YOLOv8 model (fallback)
-|-- datasets/
-|   |-- midv2020/              Real identity document dataset
-|   |-- custom_id_data/        Synthetically generated training data
-|   |-- signatures/            Signature detection dataset
-|-- outputs/                   Test output directory
-|-- venv/                      Python virtual environment
+|   |-- fine_tuned.pt              Fine-tuned PII detection model
+|   |-- yolov8n.pt                 Base YOLOv8 model (fallback)
+|-- frontend/
+|   |-- index.html                 Landing page
+|   |-- tool.html                  Upload & configure page
+|   |-- results.html               Results & download page
+|   |-- contact.html               Developer contact page
+|   |-- style.css                  Global styles
+|   |-- app.js                     Frontend application logic
+|-- training/
+|   |-- train.py                   YOLOv8 fine-tuning script
+|   |-- download_midv2020.py       Dataset downloader (Roboflow API)
+|   |-- prepare_dataset.py         Dataset validation and class remapping
+|   |-- prepare_signatures.py      Signature dataset preparation for YOLO
+|   |-- generate_synthetic_data.py Synthetic ID card generator (bootstrap)
+|   |-- datasets/                  Training datasets (not tracked by git)
+|-- venv/                          Python virtual environment
 ```
 
 ---
@@ -167,7 +171,7 @@ cd "void box/yolov8_project"
 python -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 
-pip install ultralytics opencv-python-headless gradio
+pip install ultralytics opencv-python-headless flask
 pip install simple-lama-inpainting easyocr torch numpy pillow pyyaml
 ```
 
@@ -178,7 +182,7 @@ source venv/bin/activate
 python app.py
 ```
 
-The Gradio interface launches at `http://localhost:7860` with a public share link.
+The Flask server launches at `http://localhost:7860` — open it in your browser to use the web UI.
 
 ---
 
@@ -203,9 +207,7 @@ The best model is automatically saved to `models/fine_tuned.pt` and loaded by `a
 
 ---
 
-## Technical Details
-
-## 🔬 Technical Highligts
+## 🔬 Technical Highlights
 
 ### Smart Mask Generation Pipeline
 To prevent LaMa from degrading image quality with excessively large or disjoint masks, this project implements a highly tuned mask geometry engine:

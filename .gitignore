@@ -1,5 +1,6 @@
 # Python
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 *.so
@@ -15,13 +16,15 @@ env/
 
 # YOLOv8 training runs
 runs/
+training/runs/
 
 # Dataset files (too large for git)
 datasets/
+training/datasets/
 
 # Model weights (too large for git)
 *.pt
-!fine_tuned.pt
+!models/fine_tuned.pt
 
 # IDE
 .idea/
@@ -31,6 +34,9 @@ datasets/
 
 # macOS
 .DS_Store
+
+# Gradio temp files
+.gradio/
 
 # Output images (generated)
 *_detection.jpg
